@@ -3,15 +3,26 @@
 #include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/printk.h>
+#include <linux/random.h>
 
 static long kt_period_param_us = USEC_PER_SEC;
 module_param(kt_period_param_us, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(kt_period_param_us, "Timer period, us");
+static int kt_period_jitter_range_param_us = 100;
+module_param(kt_period_jitter_range_param_us, int,
+             S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(kt_period_jitter_range_us, "Timer jitter range, us");
 
 static ktime_t kt_period;
 static struct hrtimer kt;
 
 static enum hrtimer_restart kt_callback(struct hrtimer *timer) {
+  if (likely(kt_period_jitter_range_param_us > 0)) {
+    u32 jitter_lag_us = get_random_u32() % kt_period_jitter_range_param_us;
+    u64 period_us = kt_period_param_us + jitter_lag_us;
+    kt_period = ktime_set(period_us / USEC_PER_SEC,
+                          (period_us % USEC_PER_SEC) * NSEC_PER_USEC);
+  }
   hrtimer_forward_now(timer, kt_period);
   return HRTIMER_RESTART;
 }
