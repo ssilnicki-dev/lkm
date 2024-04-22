@@ -32,7 +32,7 @@ struct device_read_work_t {
 
 struct device_read_work_t device_read_work;
 
-static void __hardware_device_blocking_read(void) {
+static void hardware_device_blocking_read(void) {
   static u32 runtime_data[16];
   unsigned long usleep_us = DEVICE_DATASHEET_MINIMUM_READ_US;
   int i;
@@ -49,7 +49,7 @@ static void __hardware_device_blocking_read(void) {
 
 static void read_data_from_device(struct work_struct *work) {
   struct device_read_work_t *wrapper;
-  __hardware_device_blocking_read();
+  hardware_device_blocking_read();
   wrapper = container_of(work, struct device_read_work_t, work);
   atomic_long_set(&wrapper->work_stage, DONE);
 }
@@ -69,7 +69,7 @@ static enum hrtimer_restart kt_callback(struct hrtimer *timer) {
   return HRTIMER_RESTART;
 }
 
-static inline void __lkm_init_timer(long period_us) {
+static inline void init_timer(long period_us) {
   kt_period = ktime_set(kt_period_param_us / USEC_PER_SEC,
                         (kt_period_param_us % USEC_PER_SEC) * NSEC_PER_USEC);
   hrtimer_init(&kt, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
@@ -83,7 +83,7 @@ static int __init lkm_init(void) {
   atomic_long_set(&device_read_work.work_stage, DONE);
   INIT_WORK(&device_read_work.work, read_data_from_device);
 
-  __lkm_init_timer(kt_period_param_us);
+  init_timer(kt_period_param_us);
 
   return 0;
 }
