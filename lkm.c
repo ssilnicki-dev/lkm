@@ -22,9 +22,14 @@ static int device_read_jitter_range_param_us = 25;
 module_param(device_read_jitter_range_param_us, int,
              S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(device_read_jitter_range_param_us, "Device read jitter, us");
+static int use_high_pri_queue = 0;
+module_param(use_high_pri_queue, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(use_high_pri_queue,
+                 "Use dedicated high priority queue, [1|0]");
 #define DEVICE_DATASHEET_MINIMUM_READ_US (80)
 #define SYSFS_DATA_ENDPOINTS_BASE "lkm_data"
 #define SYSFS_DATA_STAT_ENDPOINT stat
+#define HIGH_PRIORITY_QUEUE_NAME "lkm_high_pri_queue"
 
 static ktime_t kt_period;
 static struct hrtimer kt;
@@ -45,6 +50,8 @@ static ssize_t sysfs_output_device_statistics(struct kobject *,
                                               struct kobj_attribute *, char *);
 static struct kobj_attribute sydfs_stat_attribute = __ATTR(
     SYSFS_DATA_STAT_ENDPOINT, 0444, sysfs_output_device_statistics, NULL);
+
+static struct workqueue_struct *high_pri_queue = NULL;
 
 static ssize_t sysfs_output_device_statistics(struct kobject *kobj,
                                               struct kobj_attribute *attr,
@@ -86,7 +93,10 @@ static enum hrtimer_restart kt_callback(struct hrtimer *timer) {
   }
   if (likely(atomic_long_read(&device_read_work.work_stage) == DONE)) {
     atomic_long_set(&device_read_work.work_stage, IN_PROGRESS);
-    schedule_work(&device_read_work.work);
+    if (high_pri_queue)
+      queue_work(high_pri_queue, &device_read_work.work);
+    else
+      schedule_work(&device_read_work.work);
   } else
     atomic_long_add(1, &device_read_omissions);
 
@@ -118,6 +128,17 @@ static int __init lkm_init(void) {
     goto err_sysfs_file;
   }
 
+  if (use_high_pri_queue) {
+    high_pri_queue =
+        alloc_workqueue(HIGH_PRIORITY_QUEUE_NAME, WQ_UNBOUND | WQ_HIGHPRI, 0);
+    if (!high_pri_queue) {
+      pr_err("lkm failed to allocate high pri queue\n");
+      error = -ENOMEM;
+      goto err_sysfs_file;
+    }
+    pr_info("lkm using dedicated high priority queue\n");
+  }
+
   atomic_long_set(&device_read_omissions, 0);
   atomic_long_set(&device_data_reads, 0);
   atomic_long_set(&device_read_work.work_stage, DONE);
@@ -140,6 +161,11 @@ static void __exit lkm_exit(void) {
   hrtimer_cancel(&kt);
   cancel_work(&device_read_work.work);
   kobject_put(sysfs_kobject);
+
+  if (high_pri_queue) {
+    flush_workqueue(high_pri_queue);
+    destroy_workqueue(high_pri_queue);
+  }
 
   pr_info("lkm unloaded\n");
 }
