@@ -1,11 +1,14 @@
 #include <linux/delay.h>
 #include <linux/hrtimer.h>
 #include <linux/init.h>
+#include <linux/kobject.h>
 #include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/printk.h>
 #include <linux/random.h>
 #include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/sysfs.h>
 #include <linux/workqueue.h>
 
 static long kt_period_param_us = USEC_PER_SEC;
@@ -20,6 +23,8 @@ module_param(device_read_jitter_range_param_us, int,
              S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(device_read_jitter_range_param_us, "Device read jitter, us");
 #define DEVICE_DATASHEET_MINIMUM_READ_US (80)
+#define SYSFS_DATA_ENDPOINTS_BASE "lkm_data"
+#define SYSFS_DATA_STAT_ENDPOINT stat
 
 static ktime_t kt_period;
 static struct hrtimer kt;
@@ -32,6 +37,23 @@ struct device_read_work_t {
 
 struct device_read_work_t device_read_work;
 
+static atomic_long_t device_read_omissions;
+static atomic_long_t device_data_reads;
+
+static struct kobject *sysfs_kobject;
+static ssize_t sysfs_output_device_statistics(struct kobject *,
+                                              struct kobj_attribute *, char *);
+static struct kobj_attribute sydfs_stat_attribute = __ATTR(
+    SYSFS_DATA_STAT_ENDPOINT, 0444, sysfs_output_device_statistics, NULL);
+
+static ssize_t sysfs_output_device_statistics(struct kobject *kobj,
+                                              struct kobj_attribute *attr,
+                                              char *buf) {
+  return sprintf(buf, "reads: %ld, skips: %ld\n",
+                 atomic_long_read(&device_data_reads),
+                 atomic_long_read(&device_read_omissions));
+}
+
 static void hardware_device_blocking_read(void) {
   static u32 runtime_data[16];
   unsigned long usleep_us = DEVICE_DATASHEET_MINIMUM_READ_US;
@@ -40,6 +62,7 @@ static void hardware_device_blocking_read(void) {
   for (i = 0; i < (sizeof(runtime_data) / sizeof(*runtime_data)); i = i + 1) {
     runtime_data[i] = get_random_u32();
   }
+  atomic_long_add(1, &device_data_reads);
 
   if (likely(device_read_jitter_range_param_us > 0)) {
     usleep_us += get_random_u32() % device_read_jitter_range_param_us;
@@ -64,7 +87,9 @@ static enum hrtimer_restart kt_callback(struct hrtimer *timer) {
   if (likely(atomic_long_read(&device_read_work.work_stage) == DONE)) {
     atomic_long_set(&device_read_work.work_stage, IN_PROGRESS);
     schedule_work(&device_read_work.work);
-  }
+  } else
+    atomic_long_add(1, &device_read_omissions);
+
   hrtimer_forward_now(timer, kt_period);
   return HRTIMER_RESTART;
 }
@@ -78,19 +103,43 @@ static inline void init_timer(long period_us) {
 }
 
 static int __init lkm_init(void) {
-  pr_info("lkm loaded\n");
+  int error;
 
+  sysfs_kobject =
+      kobject_create_and_add(SYSFS_DATA_ENDPOINTS_BASE, kernel_kobj);
+  if (!sysfs_kobject) {
+    error = -ENOMEM;
+    pr_err("lkm failed to allocate sysfs object\n");
+    goto err_sysfs_kobj;
+  }
+  error = sysfs_create_file(sysfs_kobject, &sydfs_stat_attribute.attr);
+  if (error) {
+    pr_err("lkm failed to initialize sysfs object\n");
+    goto err_sysfs_file;
+  }
+
+  atomic_long_set(&device_read_omissions, 0);
+  atomic_long_set(&device_data_reads, 0);
   atomic_long_set(&device_read_work.work_stage, DONE);
   INIT_WORK(&device_read_work.work, read_data_from_device);
 
   init_timer(kt_period_param_us);
 
+  pr_info("lkm loaded\n");
+
   return 0;
+
+err_sysfs_file:
+  kobject_put(sysfs_kobject);
+
+err_sysfs_kobj:
+  return error;
 }
 
 static void __exit lkm_exit(void) {
   hrtimer_cancel(&kt);
   cancel_work(&device_read_work.work);
+  kobject_put(sysfs_kobject);
 
   pr_info("lkm unloaded\n");
 }
