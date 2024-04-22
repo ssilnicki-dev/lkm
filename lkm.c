@@ -53,7 +53,7 @@ static atomic_long_t device_data_reads;
 
 static struct kobject* sysfs_kobject;
 static ssize_t sysfs_output_device_statistics(struct kobject*, struct kobj_attribute*, char*);
-static struct kobj_attribute sydfs_stat_attribute = __ATTR(SYSFS_DATA_STAT_ENDPOINT, 0444, sysfs_output_device_statistics, NULL);
+static struct kobj_attribute sysfs_stat_attribute = __ATTR(SYSFS_DATA_STAT_ENDPOINT, 0444, sysfs_output_device_statistics, NULL);
 
 static struct workqueue_struct* high_pri_queue = NULL;
 
@@ -131,7 +131,7 @@ static int __init lkm_init(void)
         pr_err("lkm failed to allocate sysfs object\n");
         goto err_sysfs_kobj;
     }
-    error = sysfs_create_file(sysfs_kobject, &sydfs_stat_attribute.attr);
+    error = sysfs_create_file(sysfs_kobject, &sysfs_stat_attribute.attr);
     if (error)
     {
         pr_err("lkm failed to initialize sysfs object\n");
